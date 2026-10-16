@@ -1,59 +1,72 @@
-IDS = [l.strip() for l in open("subset_ids.txt")]
+IDS = ['1bzc', '1c5z']
 
 rule all:
     input:
-        expand("vina/pqbqt_files/{id}_protein.pdbqt", id=IDS), 
-        expand("vina/pdbqt_files/{id}_ligand.pdbqt", id=IDS),
-        expand("vina/configs/{id}_vina_config.txt", id=IDS),
-        expand("vina/output/{id}_vina_out.pdbqt", id=IDS)
+        expand("sample_data/{id}/{id}_proteinH.pdb", id=IDS), 
+        expand("sample_data/{id}/{id}_protein.pqr", id=IDS),
+        expand("sample_data/{id}/{id}_protein.pdbqt", id=IDS),
+        expand("sample_data/{id}/{id}_ligand.pdbqt", id=IDS),
+        expand("sample_data/{id}/{id}_config.txt", id=IDS),
+        expand("sample_data/{id}/{id}_vina_out.pdbqt", id=IDS)
 
-rule prep_receptor:
+
+#remove unwanted water molecules, add heavy atoms and hydrogens where needed to new pdb file
+#pqr file contains additional info about atomic radii and atomic charges
+rule fix_pdb:
     input:
         "sample_data/{id}/{id}_protein.pdb"
     output:
-        "vina/pdbqt_files/{id}_protein.pdbqt" 
+        pdb = "sample_data/{id}/{id}_proteinH.pdb",
+        pqr = "sample_data/{id}/{id}_protein.pqr"
     shell:
         """
-        obabel {input} -O {output} -xr -h
+        pdb2pqr --pdb-output={output.pdb} --pH=7.4 {input} {output.pqr} --whitespace
         """
 
-rule prep_ligand:
+#output of previous rule to pdbqt
+# -xr preserve residues and treat as rigid
+# -r retain hydrogens
+rule protein_pdbqt:
     input:
-        "sample_data/{id}/{id}_ligand.sdf"
+        "sample_data/{id}/{id}_protein.pqr"
     output:
-        "vina/pdbqt_files/{id}_ligand.pdbqt"
+        "sample_data/{id}/{id}_protein.pdbqt"
     shell:
         """
-        obabel {input} -O {output} -h --partialcharge gasteiger
+        obabel {input} -O {output} -xr -r
         """
 
-rule write_config:
+#ligand preparation using meeko - specialized for small molecules
+rule ligand_pdbqt:
     input:
-        receptor = "vina/pdbqt_files/{id}_protein.pdbqt",
-        ligand = "vina/pdbqt_files/{id}_ligand.pdbqt"
+        "sample_data/{id}/{id}_ligand_opt.mol2"
     output:
-        "vina/configs/{id}_vina_config.txt"
+        "sample_data/{id}/{id}_ligand.pdbqt"
     shell:
         """
-        cat << EOF > {output}
-        receptor = {input.receptor}
-        ligand = {input.ligand}
-        
-        center_x = 0.0
-        center_y = 0.0
-        center_z = 0.0
-        size_x = 20.0
-        size_y = 20.0
-        size_z = 20.0
-        exhaustiveness = 8
-        EOF
+        mk_prepare_ligand.py -i {input} -o {output}
         """
 
+#parse coordinates of crystal ligand from optimized mol2 and write config.txt
+#run with --use-conda
+rule config:
+    input:
+        mol2 = "sample_data/{id}/{id}_ligand_opt.mol2",
+        receptor = "sample_data/{id}/{id}_protein.pdbqt",
+        ligand = "sample_data/{id}/{id}_ligand.pdbqt"
+    output:
+        "sample_data/{id}/{id}_config.txt"
+    conda:
+        "docking_pipeline"
+    script:
+        "config.py"
+
+#run vina using config file
 rule run_vina:
     input:
-        "vina/configs/{id}_vina_config.txt"
+        "sample_data/{id}/{id}_config.txt"
     output:
-        "vina/output/{id}_vina_out.pdbqt"
+        "sample_data/{id}/{id}_vina_out.pdbqt"
     shell:
         """
         vina --config {input} --out {output}
